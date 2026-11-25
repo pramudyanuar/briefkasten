@@ -35,7 +35,15 @@ jobs:
         id: install
         run: pnpm install --frozen-lockfile --ignore-scripts
       - name: ESLint
-        run: pnpm exec eslint .
+        run: |
+          base="$(bash .github/scripts/ci-base.sh)"
+          base="${base:-$(git hash-object -t tree -w /dev/null)}"
+          git diff --name-only --diff-filter=ACMRT -z "$base" HEAD -- \
+            '*.js' '*.mjs' '*.cjs' '*.ts' '*.svelte' > "$RUNNER_TEMP/eslint-files"
+          mapfile -d '' -t files < "$RUNNER_TEMP/eslint-files"
+          if (( ${#files[@]} )); then
+            pnpm exec eslint --no-warn-ignored -- "${files[@]}"
+          fi
       - name: Prettier
         if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
@@ -80,12 +88,55 @@ jobs:
             echo "::error::Set the SNYK_TOKEN Actions secret to run Snyk scans."
             exit 1
           fi
-          snyk test --all-projects --dev --fail-fast
+          base="$(bash .github/scripts/ci-base.sh)"
+          if [[ -z "$base" ]]; then
+            echo "::error::Could not resolve the baseline for Snyk Open Source."
+            exit 1
+          fi
+          if git diff --quiet "$base" HEAD --; then
+            exit 0
+          fi
+
+          scan() {
+            local status=0
+            (cd "$1" && snyk test --all-projects --dev --fail-fast --json) > "$2" || status=$?
+            if (( status > 1 )); then
+              echo "::error::Snyk Open Source could not complete the $3 scan (exit $status)."
+              return "$status"
+            fi
+          }
+
+          baseline="$RUNNER_TEMP/snyk-baseline"
+          git worktree add --detach "$baseline" "$base"
+          trap 'git worktree remove "$baseline"' EXIT
+          scan "$baseline" "$RUNNER_TEMP/snyk-base.json" baseline
+          scan "$GITHUB_WORKSPACE" "$RUNNER_TEMP/snyk-current.json" current
+          python3 .github/scripts/check-snyk-changes.py dependencies \
+            "$RUNNER_TEMP/snyk-base.json" "$baseline" "$RUNNER_TEMP/snyk-current.json"
       - name: Snyk Code SAST
         if: ${{ !cancelled() && steps.snyk.outcome == 'success' }}
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: snyk code test
+        run: |
+          base="$(bash .github/scripts/ci-base.sh)"
+          if [[ -z "$base" ]]; then
+            echo "::error::Could not resolve the baseline for Snyk Code."
+            exit 1
+          fi
+          if git diff --quiet "$base" HEAD --; then
+            exit 0
+          fi
+          report="$RUNNER_TEMP/snyk-code.sarif"
+          status=0
+          snyk code test --sarif-file-output="$report" || status=$?
+          if (( status > 1 )); then
+            exit "$status"
+          fi
+          if [[ -s "$report" ]]; then
+            python3 .github/scripts/check-snyk-changes.py code "$report" "$base"
+          else
+            exit "$status"
+          fi
       - name: Snyk status for external pull requests
         if: env.SERVICE_SCANS != 'true'
         run: echo "::notice::Snyk scans require the repository's SNYK_TOKEN and are skipped for this event."
@@ -133,7 +184,7 @@ jobs:
           path: coverage/lcov.info
           if-no-files-found: error
       - name: Check SonarQube Cloud configuration
-        if: env.SERVICE_SCANS == 'true'
+        if: env.SERVICE_SCANS == 'true' && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch)
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
@@ -144,7 +195,7 @@ jobs:
             exit 1
           fi
       - name: SonarQube Cloud Analysis
-        if: env.SERVICE_SCANS == 'true'
+        if: env.SERVICE_SCANS == 'true' && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch)
         uses: SonarSource/sonarqube-scan-action@v8.5.1
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -152,6 +203,7 @@ jobs:
           args: >-
             -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
             -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+            -Dsonar.qualitygate.wait=${{ github.event_name == 'pull_request' }}
       - name: SonarQube Cloud status for external pull requests
         if: env.SERVICE_SCANS != 'true'
         run: echo "::notice::SonarQube Cloud analysis requires the repository's SONAR_TOKEN and is skipped for this event."
