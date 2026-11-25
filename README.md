@@ -121,6 +121,10 @@ Under **Settings → Secrets and variables → Actions**, add `SNYK_TOKEN` and `
 
 Use `CI Result` as the required status check in the branch ruleset to enforce the combined job result.
 
+### GitHub Releases
+
+Open **Actions → Publish GitHub Release → Run workflow**, select `main`, and enter a tag such as `v1.1.0`. The workflow verifies that the exact commit passed the `CI Result` check on `main`, creates the tag at that commit, and publishes the GitHub Release with generated release notes.
+
 ## 📝 License
 
 MIT
