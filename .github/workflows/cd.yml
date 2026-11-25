@@ -1,0 +1,88 @@
+name: Publish GitHub Release
+run-name: Publish ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag in vMAJOR.MINOR.PATCH format"
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: publish-github-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Verify CI and publish release
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify main commit and publish GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ github.sha }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::Run this workflow from main."
+            exit 1
+          fi
+          if [[ ! "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::The release tag must use vMAJOR.MINOR.PATCH."
+            exit 1
+          fi
+
+          api="repos/$GITHUB_REPOSITORY"
+          ancestor="$(gh api "$api/compare/$RELEASE_SHA...main" --jq '.merge_base_commit.sha')"
+          if [[ "$ancestor" != "$RELEASE_SHA" ]]; then
+            echo "::error::The selected commit is outside the history of main."
+            exit 1
+          fi
+
+          run="$(gh api "$api/actions/workflows/ci.yml/runs" --method GET \
+            -f branch=main -f event=push -f head_sha="$RELEASE_SHA" -f per_page=1 \
+            --jq '.workflow_runs[0] | [.id, .run_attempt, .conclusion, .html_url] | @tsv')"
+          read -r run_id attempt conclusion ci_url <<< "$run"
+          if [[ -z "$run_id" || "$conclusion" != success ]]; then
+            echo "::error::The latest CI push run for this exact main commit must pass."
+            exit 1
+          fi
+          gate="$(gh api "$api/actions/runs/$run_id/attempts/$attempt/jobs" \
+            --jq 'any(.jobs[]; .name == "CI Result" and .conclusion == "success")')"
+          if [[ "$gate" != true ]]; then
+            echo "::error::The CI Result job must pass for this commit."
+            exit 1
+          fi
+
+          tag_ref="$api/git/ref/tags/$RELEASE_TAG"
+          if ! tag_sha="$(gh api "$tag_ref" --jq '.object.sha' 2>/dev/null)"; then
+            tag_sha="$(gh api "$api/git/refs" --method POST \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$RELEASE_SHA" --jq '.object.sha')"
+          fi
+          if [[ "$tag_sha" != "$RELEASE_SHA" ]]; then
+            echo "::error::The release tag already points to another Git object."
+            exit 1
+          fi
+
+          if release="$(gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft,url 2>/dev/null)"; then
+            if [[ "$(jq -r '.isDraft' <<< "$release")" == true ]]; then
+              echo "::error::A draft already exists for this tag. Review it in GitHub Releases."
+              exit 1
+            fi
+            release_url="$(jq -r '.url' <<< "$release")"
+          else
+            release_url="$(gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --title "Briefkasten $RELEASE_TAG" --generate-notes \
+              --notes "Verified main commit $RELEASE_SHA with [CI run]($ci_url).")"
+          fi
+
+          printf '[%s](%s) published from [%s](%s).\n' \
+            "$RELEASE_TAG" "$release_url" "$RELEASE_SHA" "$ci_url" >> "$GITHUB_STEP_SUMMARY"
