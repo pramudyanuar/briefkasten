@@ -113,7 +113,9 @@ This project is open to all contributions. Please stick to the repo settings and
 
 ### GitHub Actions CI
 
-The `CI` workflow runs on branch pushes and pull requests. ESLint checks the repository, Prettier checks changed JS, TypeScript, Svelte, JSON, and YAML files, and Gitleaks scans the incoming commits. The backend unit tests publish LCOV coverage, which SonarQube Cloud uses when evaluating its Quality Gate.
+The `CI` workflow runs on branch pushes and pull requests. ESLint and Prettier check changed files, and Gitleaks scans the incoming commits. Snyk Open Source compares scans of the base and current revision and fails on new vulnerability paths. Snyk Code checks whether a finding or its data flow touches changed lines. Build and unit tests run for the whole application.
+
+SonarQube Cloud applies the Quality Gate to code changed by a pull request. Pushes to the default branch also publish a scan to keep the baseline current. The backend unit tests publish LCOV coverage for these scans.
 
 Under **Settings → Secrets and variables → Actions**, add `SNYK_TOKEN` and `SONAR_TOKEN` as secrets, and `SONAR_ORGANIZATION` and `SONAR_PROJECT_KEY` as variables. Enable Snyk Code in the Snyk organization and use CI-based analysis for the SonarQube Cloud project. Fork and Dependabot pull requests run code quality, Gitleaks, tests, and build. GitHub restricts access to the Actions secrets required by Snyk and SonarQube Cloud for those events.
 
