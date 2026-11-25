@@ -175,13 +175,24 @@ jobs:
           pnpm --filter sveltekasten-backend test:coverage
           sed -i 's|^SF:src/|SF:apps/backend/src/|' coverage/lcov.info
           test -s coverage/lcov.info
+      - name: CI helper tests and coverage
+        run: |
+          python3 -m venv "$RUNNER_TEMP/ci-python"
+          python="$RUNNER_TEMP/ci-python/bin/python"
+          "$python" -m pip install coverage==7.10.7
+          export COVERAGE_FILE="$RUNNER_TEMP/ci-python.coverage"
+          "$python" -m coverage run --include=.github/scripts/check-snyk-changes.py \
+            -m unittest discover -s .github/scripts/tests
+          "$python" -m coverage xml -o coverage/ci-python.xml
       - name: Build Application
         run: pnpm build
       - name: Upload coverage
         uses: actions/upload-artifact@v6
         with:
           name: unit-test-coverage
-          path: coverage/lcov.info
+          path: |
+            coverage/lcov.info
+            coverage/ci-python.xml
           if-no-files-found: error
       - name: Check SonarQube Cloud configuration
         if: env.SERVICE_SCANS == 'true' && (github.event_name == 'pull_request' || github.ref_name == github.event.repository.default_branch)
