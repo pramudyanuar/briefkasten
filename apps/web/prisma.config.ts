@@ -1,5 +1,12 @@
+import { existsSync } from "node:fs"
 import path from "node:path"
+import { loadEnvFile } from "node:process"
 import { defineConfig } from "prisma/config"
+
+for (const name of [".env.local", ".env"]) {
+  const file = new URL(name, import.meta.url)
+  if (existsSync(file)) loadEnvFile(file)
+}
 
 export default defineConfig({
   schema: path.join("prisma", "schema.prisma"),
@@ -7,9 +14,7 @@ export default defineConfig({
     path: path.join("prisma", "migrations"),
   },
   datasource: {
-    // process.env (not prisma's env()) so `prisma generate` works without
-    // DATABASE_URL set, e.g. during docker build. migrate/db commands still
-    // need it set at runtime.
-    url: process.env.DATABASE_URL ?? "",
+    // Use a session connection for CLI operations when a pooler is configured.
+    url: process.env.DIRECT_URL || process.env.DATABASE_URL || "",
   },
 })

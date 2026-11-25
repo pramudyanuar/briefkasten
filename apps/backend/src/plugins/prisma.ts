@@ -6,9 +6,9 @@ import { PrismaClient } from "../prisma-client/client.js"
 const debug = debugFactory("backend:db")
 
 const prismaClientSingleton = () => {
-  const adapter = new PrismaPg({
-    connectionString: process.env.DATABASE_URL,
-  })
+  const connectionString = process.env.DATABASE_URL
+  const schema = connectionString ? new URL(connectionString).searchParams.get("schema") : null
+  const adapter = new PrismaPg({ connectionString }, { schema: schema ?? undefined })
 
   return new PrismaClient({ adapter })
 }
@@ -25,7 +25,6 @@ if (process.env.NODE_ENV !== "production") {
   globalThis.prismaGlobal = prisma
 }
 
-// eslint-disable-next-line @typescript-eslint/no-misused-promises
 process.on("exit", async () => {
   // Note: might not be necessary, hook might be built into Prisma now-a-days.
   // needs more research.

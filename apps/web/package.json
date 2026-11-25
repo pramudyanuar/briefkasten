@@ -5,7 +5,7 @@
     "dev": "vite dev --port 3000",
     "clean": "rm -rf build || true",
     "build": "pnpm clean && vite build",
-    "start": "PORT=8000 node build/index.js",
+    "start": "PORT=8000 node --env-file-if-exists=.env --env-file-if-exists=.env.local build/index.js",
     "preview": "vite preview",
     "lint": "biome format --write src/**",
     "lint:fix": "biome lint  src/**",

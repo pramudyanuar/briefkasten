@@ -53,6 +53,19 @@ $ pnpm start
 > [!NOTE]
 > `pnpm db:deploy` runs `prisma migrate deploy` against a **fresh** database. If you are upgrading an existing database whose schema already matches (e.g. a previous v2 instance), baseline it instead with `pnpm --filter sveltekasten-web exec prisma migrate resolve --applied 0_init` so the migration is recorded without re-running the DDL. For quick local iteration you can still use `pnpm db:push` to sync `schema.prisma` directly.
 
+### Supabase Postgres
+
+Copy the transaction and session pooler connection strings from the Supabase dashboard's **Connect** panel. Download the database CA certificate from **Database Settings → SSL Configuration**. Set the same database URLs in `apps/web/.env.local` and `apps/backend/.env.local` for local development, or in the services' `.env` files for Docker Compose. Keep the other app settings in the `.env` files described above.
+
+```dotenv
+DATABASE_URL="postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@POOLER_HOST:6543/postgres?pgbouncer=true&sslmode=verify-full&sslrootcert=ENCODED_CA_PATH&schema=briefkasten"
+DIRECT_URL="postgresql://postgres.PROJECT_REF:ENCODED_PASSWORD@POOLER_HOST:5432/postgres?sslmode=require&sslaccept=strict&sslcert=ENCODED_CA_PATH&schema=briefkasten"
+```
+
+URL-encode the database password and the absolute path to the CA certificate. For Docker Compose, mount the certificate into both services and use its path inside each container. Both URLs must use the same schema. The app uses `DATABASE_URL`, and the Prisma CLI uses `DIRECT_URL` when set. Keep `briefkasten` out of the Supabase Data API's exposed schemas because it holds application and Better Auth tables.
+
+From the repository root, run `pnpm db:deploy` to apply the migrations to Supabase and `pnpm db:generate` to generate the Prisma clients for both apps.
+
 ## 🐋 Docker
 
 You can run the entire stack yourself via Docker, there are multiple variants depending on if you want to self-host everything or want to rely on some cloud services.
@@ -88,16 +101,23 @@ docker compose exec -T database \
   < apps/web/prisma/migrations/0_init/migration.sql
 ```
 
-If you use an external / managed database instead, apply the same baseline from a checkout of this repo:
+If you use an external or managed database, apply the migrations from a checkout of this repo with the dependencies installed. Prisma uses the database connection and schema configured for the web app.
 
 ```sh
-psql "$DATABASE_URL" -f apps/web/prisma/migrations/0_init/migration.sql
-# or, with the repo's dependencies installed: pnpm db:deploy
+pnpm db:deploy
 ```
 
 ## 👷 Contributing
 
 This project is open to all contributions. Please stick to the repo settings and I'll be happy to take a look at your issue / PR!
+
+### GitHub Actions CI
+
+The `CI` workflow runs on branch pushes and pull requests. ESLint checks the repository, Prettier checks changed JS, TypeScript, Svelte, JSON, and YAML files, and Gitleaks scans the incoming commits. The backend unit tests publish LCOV coverage, which SonarQube Cloud uses when evaluating its Quality Gate.
+
+Under **Settings → Secrets and variables → Actions**, add `SNYK_TOKEN` and `SONAR_TOKEN` as secrets, and `SONAR_ORGANIZATION` and `SONAR_PROJECT_KEY` as variables. Enable Snyk Code in the Snyk organization and use CI-based analysis for the SonarQube Cloud project. Fork and Dependabot pull requests run code quality, Gitleaks, tests, and build. GitHub restricts access to the Actions secrets required by Snyk and SonarQube Cloud for those events.
+
+Use `CI Result` as the required status check in the branch ruleset to enforce the combined job result.
 
 ## 📝 License
 

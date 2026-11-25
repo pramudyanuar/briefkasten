@@ -9,6 +9,8 @@ tests
 *.log*
 .cache
 .env
+**/.env
+**/.env.*
 .vercel
 .svelte-kit
 README.md

@@ -10,6 +10,7 @@ export const auth = betterAuth({
   // Must be the exact public URL the browser uses (https://<domain> behind
   // Cloudflare/traefik). OAuth redirect_uri and the state cookie derive from it.
   baseURL: env.BETTER_AUTH_URL,
+  secret: env.BETTER_AUTH_SECRET,
   trustedOrigins: env.BETTER_AUTH_URL ? [env.BETTER_AUTH_URL] : [],
   database: prismaAdapter(db, {
     provider: "postgresql",

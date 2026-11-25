@@ -1,0 +1,177 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+  BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+  DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  REF_NAME: ${{ github.ref_name }}
+  # Forks and Dependabot PRs can run every check that does not require a secret.
+  SERVICE_SCANS: ${{ github.actor != 'dependabot[bot]' && (github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository) }}
+
+jobs:
+  code-quality:
+    name: Code Quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install dependencies
+        id: install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: ESLint
+        run: pnpm exec eslint .
+      - name: Prettier
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          base="$(bash .github/scripts/ci-base.sh)"
+          base="${base:-$(git hash-object -t tree -w /dev/null)}"
+
+          git diff --name-only --diff-filter=ACMRT -z "$base" HEAD -- \
+            '*.js' '*.mjs' '*.cjs' '*.ts' '*.svelte' '*.json' '*.yml' '*.yaml' \
+            ':!pnpm-lock.yaml' > "$RUNNER_TEMP/prettier-files"
+          mapfile -d '' -t files < "$RUNNER_TEMP/prettier-files"
+          if (( ${#files[@]} )); then
+            pnpm exec prettier --check -- "${files[@]}"
+          fi
+
+  security:
+    name: Security Scanning
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        id: checkout
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+        if: env.SERVICE_SCANS == 'true'
+      - uses: actions/setup-node@v6
+        if: env.SERVICE_SCANS == 'true'
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Install Snyk CLI
+        id: snyk
+        if: env.SERVICE_SCANS == 'true'
+        run: npm install --global snyk@1.1309.0
+      - name: Snyk Dependency Scan
+        if: env.SERVICE_SCANS == 'true'
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: |
+          if [[ -z "$SNYK_TOKEN" ]]; then
+            echo "::error::Set the SNYK_TOKEN Actions secret to run Snyk scans."
+            exit 1
+          fi
+          snyk test --all-projects --dev --fail-fast
+      - name: Snyk Code SAST
+        if: ${{ !cancelled() && steps.snyk.outcome == 'success' }}
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        run: snyk code test
+      - name: Snyk status for external pull requests
+        if: env.SERVICE_SCANS != 'true'
+        run: echo "::notice::Snyk scans require the repository's SNYK_TOKEN and are skipped for this event."
+      - name: Gitleaks Secret Scan
+        if: ${{ !cancelled() && steps.checkout.outcome == 'success' }}
+        run: |
+          base="$(bash .github/scripts/ci-base.sh)"
+          commits="${base:+${base}..}HEAD"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            --volume "$GITHUB_WORKSPACE:/repo:ro" ghcr.io/gitleaks/gitleaks:v8.30.1 \
+            git --redact=100 --log-opts="$commits" /repo
+
+  build-and-test:
+    name: Build & Testing
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PUBLIC_WORKER_URL: http://localhost:8000
+      EDGE_AI_KEY: ""
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6.1.1
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Generate Prisma clients
+        run: pnpm db:generate
+      - name: Unit Test & Coverage
+        run: |
+          pnpm --filter sveltekasten-backend test:coverage
+          sed -i 's|^SF:src/|SF:apps/backend/src/|' coverage/lcov.info
+          test -s coverage/lcov.info
+      - name: Build Application
+        run: pnpm build
+      - name: Upload coverage
+        uses: actions/upload-artifact@v6
+        with:
+          name: unit-test-coverage
+          path: coverage/lcov.info
+          if-no-files-found: error
+      - name: Check SonarQube Cloud configuration
+        if: env.SERVICE_SCANS == 'true'
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_ORGANIZATION: ${{ vars.SONAR_ORGANIZATION }}
+          SONAR_PROJECT_KEY: ${{ vars.SONAR_PROJECT_KEY }}
+        run: |
+          if [[ -z "$SONAR_TOKEN" || -z "$SONAR_ORGANIZATION" || -z "$SONAR_PROJECT_KEY" ]]; then
+            echo "::error::Set the SONAR_TOKEN Actions secret and the SONAR_ORGANIZATION and SONAR_PROJECT_KEY Actions variables."
+            exit 1
+          fi
+      - name: SonarQube Cloud Analysis
+        if: env.SERVICE_SCANS == 'true'
+        uses: SonarSource/sonarqube-scan-action@v8.5.1
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >-
+            -Dsonar.organization=${{ vars.SONAR_ORGANIZATION }}
+            -Dsonar.projectKey=${{ vars.SONAR_PROJECT_KEY }}
+      - name: SonarQube Cloud status for external pull requests
+        if: env.SERVICE_SCANS != 'true'
+        run: echo "::notice::SonarQube Cloud analysis requires the repository's SONAR_TOKEN and is skipped for this event."
+
+  ci-result:
+    name: CI Result
+    runs-on: ubuntu-latest
+    needs: [code-quality, security, build-and-test]
+    if: ${{ always() }}
+    timeout-minutes: 5
+    steps:
+      - name: Check required jobs
+        env:
+          QUALITY: ${{ needs.code-quality.result }}
+          SECURITY: ${{ needs.security.result }}
+          BUILD: ${{ needs.build-and-test.result }}
+        run: |
+          printf 'Code Quality: %s\nSecurity Scanning: %s\nBuild & Testing: %s\n' "$QUALITY" "$SECURITY" "$BUILD"
+          if [[ "$QUALITY" != success || "$SECURITY" != success || "$BUILD" != success ]]; then
+            echo "::error::CI failed. See the job results for details."
+            exit 1
+          fi
+          echo "CI Success"
